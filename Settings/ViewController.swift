@@ -11,6 +11,15 @@ struct SettingsSection: Hashable {
     let id = UUID()
     let sectionTitle: String
     var items: [SettingsItem]
+    var isExpanded: Bool = true
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+
+    static func == (lhs: SettingsSection, rhs: SettingsSection) -> Bool {
+        lhs.id == rhs.id
+    }
 }
 
 struct SettingsItem: Hashable {
@@ -59,8 +68,8 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
     let addSectionButton: UIButton = {
         let addButton = UIButton(type: .system)
         addButton.setTitle("Add Section", for: .normal)
-        addButton.backgroundColor = .systemGray3
         addButton.setTitleColor(.black, for: .normal)
+        addButton.backgroundColor = .systemGray5
         addButton.layer.cornerRadius = 8
         addButton.translatesAutoresizingMaskIntoConstraints = false
         return addButton
@@ -75,7 +84,7 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
     
     let refreshControl: UIRefreshControl = {
         let refresh = UIRefreshControl()
-        refresh.tintColor = .systemGray3
+        refresh.tintColor = .systemGray
         refresh.attributedTitle = NSAttributedString(string: "Updating Settings...")
         return refresh
     }()
@@ -85,6 +94,7 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
         view.backgroundColor = .systemGroupedBackground
         addLayoutToCollectionView()
         addSectionButton.addTarget(self, action: #selector(addSection), for: .touchUpInside)
+        
         view.addSubview(searchBox)
         view.addSubview(addSectionButton)
         view.addSubview(settingsView)
@@ -100,16 +110,18 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
             addSectionButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             addSectionButton.centerYAnchor.constraint(equalTo: searchBox.centerYAnchor),
             addSectionButton.widthAnchor.constraint(equalToConstant: 95),
+            addSectionButton.heightAnchor.constraint(equalToConstant: 36),
             
             settingsView.topAnchor.constraint(equalTo: searchBox.bottomAnchor, constant: 10),
             settingsView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             settingsView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             settingsView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+        
         configData()
     }
     
-    func addLayoutToCollectionView(){
+    func addLayoutToCollectionView() {
         var config = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
         config.headerMode = .supplementary
         
@@ -125,7 +137,6 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
             deleteAction.image = UIImage(systemName: "trash")
             return UISwipeActionsConfiguration(actions: [deleteAction])
         }
-        
         
         let layout = UICollectionViewCompositionalLayout.list(using: config)
         settingsView.collectionViewLayout = layout
@@ -148,9 +159,16 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
             guard let self = self,
                   let section = self.dataSource.sectionIdentifier(for: indexPath.section) else { return }
             
-            headerView.configure(title: section.sectionTitle) { [weak self] in
-                self?.addItemToSection(section)
-            }
+            headerView.configure(
+                title: section.sectionTitle,
+                isExpanded: section.isExpanded,
+                onAdd: { [weak self] in
+                    self?.addItemToSection(section)
+                },
+                onToggle: { [weak self] in
+                    self?.toggleSection(section)
+                }
+            )
         }
         
         dataSource.supplementaryViewProvider = { collectionView, kind, indexPath in
@@ -160,12 +178,18 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
         applySnapshot(animatingDifferences: false)
     }
     
+    private func toggleSection(_ section: SettingsSection) {
+        guard let sectionIndex = currentSettingsData.firstIndex(where: { $0.id == section.id }) else { return }
+        currentSettingsData[sectionIndex].isExpanded.toggle()
+        applySnapshot(animatingDifferences: true)
+    }
+    
     func deleteItem(at indexPath: IndexPath) {
         var snapshot = dataSource.snapshot()
         guard let itemToDelete = dataSource.itemIdentifier(for: indexPath) else { return }
         
         if let targetSection = dataSource.sectionIdentifier(for: indexPath.section) {
-            if let sectionIndex = currentSettingsData.firstIndex(where: { $0.sectionTitle == targetSection.sectionTitle }) {
+            if let sectionIndex = currentSettingsData.firstIndex(where: { $0.id == targetSection.id }) {
                 currentSettingsData[sectionIndex].items.removeAll { $0.id == itemToDelete.id }
             }
         }
@@ -175,7 +199,7 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
         if let section = dataSource.sectionIdentifier(for: indexPath.section),
            snapshot.numberOfItems(inSection: section) == 0 {
             snapshot.deleteSections([section])
-            if let index = currentSettingsData.firstIndex(where: { $0.sectionTitle == section.sectionTitle }) {
+            if let index = currentSettingsData.firstIndex(where: { $0.id == section.id }) {
                 currentSettingsData.remove(at: index)
             }
         }
@@ -187,8 +211,10 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
         var snapshot = NSDiffableDataSourceSnapshot<SettingsSection, SettingsItem>()
         
         for section in currentSettingsData {
-                snapshot.appendSections([section])
+            snapshot.appendSections([section])
+            if section.isExpanded {
                 snapshot.appendItems(section.items, toSection: section)
+            }
         }
         
         dataSource.apply(snapshot, animatingDifferences: animatingDifferences)
@@ -202,7 +228,9 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
                 let filteredItems = section.items.filter { item in
                     item.title.localizedCaseInsensitiveContains(searchText)
                 }
-                return SettingsSection(sectionTitle: section.sectionTitle, items: filteredItems)
+                var modifiedSection = SettingsSection(sectionTitle: section.sectionTitle, items: filteredItems)
+                modifiedSection.isExpanded = true
+                return modifiedSection
             }
         }
         
@@ -211,9 +239,7 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
     
     @objc private func handleRefresh() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self = self else {
-                return
-            }
+            guard let self = self else { return }
             self.currentSettingsData = settingsOptions
             self.searchBox.text = ""
             self.applySnapshot(animatingDifferences: true)
@@ -234,8 +260,8 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
                   let textField = alert.textFields?.first,
                   let sectionName = textField.text,
                   !sectionName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-          
-            let newSection = SettingsSection(sectionTitle: sectionName, items: [])
+            
+            let newSection = SettingsSection(sectionTitle: sectionName, items: [], isExpanded: true)
             
             self.currentSettingsData.append(newSection)
             self.applySnapshot()
@@ -274,6 +300,7 @@ class ViewController: UIViewController, UISearchBarDelegate, UICollectionViewDel
             
             let newItem = SettingsItem(title: itemTitle)
             self.currentSettingsData[sectionIndex].items.append(newItem)
+            self.currentSettingsData[sectionIndex].isExpanded = true
             self.applySnapshot(animatingDifferences: true)
         }
         
